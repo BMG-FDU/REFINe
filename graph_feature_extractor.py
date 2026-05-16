@@ -9,12 +9,20 @@ import networkx as nx
 from scipy.stats import entropy, linregress, skew as sp_skew, kurtosis as sp_kurtosis
 from scipy.sparse.linalg import eigsh
 import cv2
+"""
+Runtime feature extractor for graph-based welded network structures.
 
+This module provides the same fixed 94-dimensional feature schema used during
+model training, but exposes APIs suitable for direct graph objects and individual
+JSON files. It is intended for inference-time surrogate prediction and optimizer
+integration.
+"""
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 class GraphFeatureExtractor:
-
+# Fixed feature schema expected by the trained surrogate model.
+# The order must remain consistent with the preprocessing used during training.
     FEATURE_COLS = [
 
         "n_node", "n_edge", "total_length", "mean_edge_len", "len_cv",
@@ -58,7 +66,9 @@ class GraphFeatureExtractor:
         "contact_edge_contact_degree_q75", "contact_edge_contact_degree_q90",
         "contact_edge_contact_degree_q95",
     ]
-
+    # Initialize feature extraction settings.
+    # Raster parameters affect pore and contact features and should match the
+    # configuration used to train the surrogate model.
     def __init__(self, canvas_size=1024, thick=9, edge_margin=0.12, 
                  top_k=3, area_thresh=0.005, connectivity=8):
         self.canvas_size = canvas_size
@@ -69,7 +79,8 @@ class GraphFeatureExtractor:
         self.connectivity = connectivity
 
     # ==================== Public API ====================
-
+    # Extract features from a graph JSON file.
+    # Input validation is kept explicit so that malformed graph files fail early.
     def extract_from_path(self, filepath):
         """Extract 94-dimensional features from a graph JSON file"""
         fp = Path(filepath)
@@ -82,11 +93,15 @@ class GraphFeatureExtractor:
             raise ValueError(f"Invalid JSON format in {filepath}: {e}")
         
         return self._extract_features_from_graph(G)
-    
+    # Extract features directly from an in-memory NetworkX graph.
+    # The graph is deduplicated before feature computation to match dataset
+    # preprocessing behavior.
     def extract_from_graph(self, G):
         G_clean = self._deduplicate_graph(G)
         return self._extract_features_from_graph(G_clean)
-    
+    # Shared feature-extraction pipeline.
+    # The graph is evaluated through structural, pore, and contact descriptor groups
+    # before being returned in the fixed model-facing order.
     def _extract_features_from_graph(self, G):
         img, id2pt = self._render_image(G)
         
@@ -106,19 +121,21 @@ class GraphFeatureExtractor:
         feat.update(self._contact_features(G, id2pt))
         
         return {k: feat[k] for k in self.FEATURE_COLS}
-
+    # Return the ordered feature names used by the extractor.
     def get_feature_names(self):
 
         return self.FEATURE_COLS.copy()
-
+    # Select a subset of features by name.
+    # This utility is kept for diagnostics or ablation-style analysis.
     def select_features(self, features, names):
 
         return {k: features[k] for k in names if k in features}
-
+    # Convert a feature dictionary into a dense numeric array following FEATURE_COLS.
     def to_array(self, features):
 
         return np.array([features[k] for k in self.FEATURE_COLS], dtype=float)
-
+    # Convert a feature dictionary into a one-row DataFrame.
+    # This is convenient for predictors implemented with tabular preprocessing.
     def to_dataframe(self, features, columns=None):
 
         if columns is None:
@@ -193,7 +210,8 @@ class GraphFeatureExtractor:
         return {(int(y + min_y), int(x + min_x)) for y, x in zip(ys, xs)}
 
     # ==================== Graph I/O ====================
-
+    # Load and deduplicate a graph from JSON.
+    # The expected format contains node positions and source-target links.
     def _load_graph(self, fp):
 
         data = json.loads(Path(fp).read_text())
@@ -203,7 +221,8 @@ class GraphFeatureExtractor:
         for e in data["links"]:
             G0.add_edge(e["source"], e["target"])
         return self._deduplicate_graph(G0)
-    
+    # Merge nodes that share identical coordinates.
+    # This keeps topological analysis aligned with physical junction locations.
     def _deduplicate_graph(self, G0):
 
         pos0 = nx.get_node_attributes(G0, "pos")
@@ -222,7 +241,8 @@ class GraphFeatureExtractor:
             if a != b:
                 G.add_edge(a, b)
         return G
-
+    # Render the graph to an image for raster-based descriptors.
+    # The same coordinate normalization is used across samples to reduce scale bias.
     def _render_image(self, G):
 
         pos = np.array([G.nodes[n]["pos"] for n in G.nodes])
@@ -236,7 +256,7 @@ class GraphFeatureExtractor:
             cv2.line(img, id2pt[u], id2pt[v], 0, self.thick, cv2.LINE_AA)
         return img, id2pt
 
-
+    # Compute graph-size and edge-length descriptors.
     def _basic_size(self, G):
         pos = nx.get_node_attributes(G, "pos")
         lengths = np.array([math.dist(pos[u], pos[v]) for u, v in G.edges], dtype=float)
@@ -279,7 +299,8 @@ class GraphFeatureExtractor:
             radius_gyration=float(np.sqrt(((pos - cen) ** 2).sum(1).mean())),
             moment_total=float(np.sum(np.linalg.norm(pos - cen, axis=1) * deg)),
         )
-
+    # Compute graph connectivity and spectral descriptors used as global topology
+    # indicators.
     def _path_connectivity(self, G):
         cc_coef = float(nx.average_clustering(G))
         try:
@@ -379,7 +400,7 @@ class GraphFeatureExtractor:
         )
 
 
-
+    # Extract pore morphology descriptors from the rendered binary image.
     def _pore_features(self, img):
         res = self.canvas_size
         total_px = res * res
@@ -491,7 +512,7 @@ class GraphFeatureExtractor:
             top_circularity_min=min(s[1] for s in shapes),
             **base, **new_feats)
 
-
+    # Extract nonlocal contact and overlap descriptors from thickened graph edges.
     def _contact_features(self, G, id2pt):
         edges = list(G.edges())
         E = len(edges)
