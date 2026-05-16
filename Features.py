@@ -1,9 +1,10 @@
 """
-graph_feature_extractor.py
-Unified 94-dimensional feature extraction for weld graph structures.
-  - 34 structural / topological features
-  - 18 pore features  (original 10 + new 8)
-  - 42 contact (overlap) features
+Batch feature extraction for graph-based welded network datasets.
+
+The extractor converts each graph into a fixed-order 94-dimensional descriptor
+covering structural topology, pore morphology, and contact/overlap statistics.
+The fixed schema is intended for downstream regression, surrogate modeling,
+and comparative dataset analysis.
 """
 
 from pathlib import Path
@@ -21,55 +22,120 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 class GraphFeatureExtractor:
-
+    # Fixed feature schema used by downstream models.
+    # The order should be changed only when the training pipeline and saved models
+    # are updated consistently.
     FEATURE_COLS = [
         # Structural (34)
-        "n_node", "n_edge", "total_length", "mean_edge_len", "len_cv",
-        "deg2_count", "deg4_count", "degree_entropy",
-        "orient_entropy", "anisotropy",
-        "radius_gyration", "moment_total",
-        "clustering_coef", "fiedler_value", "lambda_max", "spectral_gap_ratio", "aspl_giant",
-        "boundary_frac", "fractal_dim_box",
-        "rigidity_index", "redundancy_ratio", "max_k_core", "kcore_frac",
-        "triangle_count", "triangle_ratio", "quad_count", "quad_ratio",
-        "avg_shortest_dy", "straightness",
-        "mesh_median_area", "mesh_cv_area", "mesh_max_area_ratio",
-        "edge_betweenness_max", "edge_betweenness_gini",
+        "n_node",
+        "n_edge",
+        "total_length",
+        "mean_edge_len",
+        "len_cv",
+        "deg2_count",
+        "deg4_count",
+        "degree_entropy",
+        "orient_entropy",
+        "anisotropy",
+        "radius_gyration",
+        "moment_total",
+        "clustering_coef",
+        "fiedler_value",
+        "lambda_max",
+        "spectral_gap_ratio",
+        "aspl_giant",
+        "boundary_frac",
+        "fractal_dim_box",
+        "rigidity_index",
+        "redundancy_ratio",
+        "max_k_core",
+        "kcore_frac",
+        "triangle_count",
+        "triangle_ratio",
+        "quad_count",
+        "quad_ratio",
+        "avg_shortest_dy",
+        "straightness",
+        "mesh_median_area",
+        "mesh_cv_area",
+        "mesh_max_area_ratio",
+        "edge_betweenness_max",
+        "edge_betweenness_gini",
         # Pore (18 = 10 original + 8 new)
-        "largest_pore_ratio", "top_area_sum_ratio",
-        "top_convexity_min", "top_convexity_mean", "top_circularity_min",
-        "big_pore_count", "total_pore_count",
-        "total_pore_ratio", "center_pore_ratio", "edge_pore_ratio",
-        "pore_area_cv", "pore_area_skew", "pore_area_kurtosis",
-        "pore_area_max_over_mean", "pore_large_area_frac", "pore_count_large_frac",
-        "pore_density", "pore_spatial_cv",
+        "largest_pore_ratio",
+        "top_area_sum_ratio",
+        "top_convexity_min",
+        "top_convexity_mean",
+        "top_circularity_min",
+        "big_pore_count",
+        "total_pore_count",
+        "total_pore_ratio",
+        "center_pore_ratio",
+        "edge_pore_ratio",
+        "pore_area_cv",
+        "pore_area_skew",
+        "pore_area_kurtosis",
+        "pore_area_max_over_mean",
+        "pore_large_area_frac",
+        "pore_count_large_frac",
+        "pore_density",
+        "pore_spatial_cv",
         # Contact (42)
-        "contact_thick", "contact_canvas_size", "contact_nodes", "contact_edges",
-        "contact_edge_pixel_union_count", "contact_edge_pixel_sum",
-        "contact_raw_overlap_pixel_count", "contact_overlap_pixel_count",
-        "contact_overlap_pair_count", "contact_overlap_pairs_per_edge",
-        "contact_edges_with_contact_count", "contact_edges_with_contact_ratio",
-        "contact_overlap_pixel_ratio_union", "contact_raw_overlap_pixel_ratio_union",
+        "contact_thick",
+        "contact_canvas_size",
+        "contact_nodes",
+        "contact_edges",
+        "contact_edge_pixel_union_count",
+        "contact_edge_pixel_sum",
+        "contact_raw_overlap_pixel_count",
+        "contact_overlap_pixel_count",
+        "contact_overlap_pair_count",
+        "contact_overlap_pairs_per_edge",
+        "contact_edges_with_contact_count",
+        "contact_edges_with_contact_ratio",
+        "contact_overlap_pixel_ratio_union",
+        "contact_raw_overlap_pixel_ratio_union",
         "contact_overlap_pixel_ratio_canvas",
-        "contact_overlap_length_px_approx", "contact_overlap_length_ratio_centerline",
+        "contact_overlap_length_px_approx",
+        "contact_overlap_length_ratio_centerline",
         "contact_centerline_length_px",
-        "contact_overlap_pair_size_sum", "contact_overlap_pair_size_mean",
-        "contact_overlap_pair_size_median", "contact_overlap_pair_size_max",
-        "contact_overlap_pair_size_std", "contact_overlap_pair_size_q75",
-        "contact_overlap_pair_size_q90", "contact_overlap_pair_size_q95",
-        "contact_overlap_cc_count", "contact_overlap_cc_size_sum",
-        "contact_overlap_cc_size_mean", "contact_overlap_cc_size_median",
-        "contact_overlap_cc_size_max", "contact_overlap_cc_size_std",
-        "contact_overlap_cc_size_q75", "contact_overlap_cc_size_q90",
+        "contact_overlap_pair_size_sum",
+        "contact_overlap_pair_size_mean",
+        "contact_overlap_pair_size_median",
+        "contact_overlap_pair_size_max",
+        "contact_overlap_pair_size_std",
+        "contact_overlap_pair_size_q75",
+        "contact_overlap_pair_size_q90",
+        "contact_overlap_pair_size_q95",
+        "contact_overlap_cc_count",
+        "contact_overlap_cc_size_sum",
+        "contact_overlap_cc_size_mean",
+        "contact_overlap_cc_size_median",
+        "contact_overlap_cc_size_max",
+        "contact_overlap_cc_size_std",
+        "contact_overlap_cc_size_q75",
+        "contact_overlap_cc_size_q90",
         "contact_overlap_cc_size_q95",
-        "contact_edge_contact_degree_mean", "contact_edge_contact_degree_median",
-        "contact_edge_contact_degree_max", "contact_edge_contact_degree_std",
-        "contact_edge_contact_degree_q75", "contact_edge_contact_degree_q90",
+        "contact_edge_contact_degree_mean",
+        "contact_edge_contact_degree_median",
+        "contact_edge_contact_degree_max",
+        "contact_edge_contact_degree_std",
+        "contact_edge_contact_degree_q75",
+        "contact_edge_contact_degree_q90",
         "contact_edge_contact_degree_q95",
     ]
 
-    def __init__(self, root, canvas_size=1024, thick=9,
-                 edge_margin=0.12, top_k=3, area_thresh=0.005, connectivity=8):
+    # Initialize dataset-level feature extraction parameters.
+    # Rasterization-related settings control pore and contact measurements, while
+    # graph-based descriptors remain computed from the vector graph.
+    def __init__(self,
+                 root,
+                 canvas_size=1024,
+                 thick=9,
+                 edge_margin=0.12,
+                 top_k=3,
+                 area_thresh=0.005,
+                 connectivity=8):
         self.root = Path(root)
         self.canvas_size = canvas_size
         self.thick = thick
@@ -81,6 +147,7 @@ class GraphFeatureExtractor:
     # ==================== Utilities ====================
 
     @staticmethod
+    # Compute a robust Gini coefficient for nonnegative feature arrays.
     def _gini(x):
         if x.size == 0 or x.sum() == 0:
             return 0.0
@@ -91,27 +158,42 @@ class GraphFeatureExtractor:
 
     @staticmethod
     def _safe_stats(arr):
+        # Return common summary statistics for variable-length measurements.
+        # Empty inputs are mapped to zeros to keep the feature schema stable.
         if len(arr) == 0:
-            return dict(count=0, sum=0.0, mean=0.0, median=0.0, max=0.0,
-                        std=0.0, q75=0.0, q90=0.0, q95=0.0)
+            return dict(count=0,
+                        sum=0.0,
+                        mean=0.0,
+                        median=0.0,
+                        max=0.0,
+                        std=0.0,
+                        q75=0.0,
+                        q90=0.0,
+                        q95=0.0)
         a = np.asarray(arr, dtype=float)
         return dict(
-            count=int(a.size), sum=float(a.sum()),
-            mean=float(a.mean()), median=float(np.median(a)),
-            max=float(a.max()), std=float(a.std(ddof=0)),
+            count=int(a.size),
+            sum=float(a.sum()),
+            mean=float(a.mean()),
+            median=float(np.median(a)),
+            max=float(a.max()),
+            std=float(a.std(ddof=0)),
             q75=float(np.quantile(a, 0.75)),
             q90=float(np.quantile(a, 0.90)),
             q95=float(np.quantile(a, 0.95)),
         )
-
+    # Estimate connected-component sizes from a sparse set of raster pixels.
+    # This avoids creating extra full-size masks for overlap post-processing.
     @staticmethod
     def _cc_sizes_from_pixels(pixel_set, connectivity=8):
         if not pixel_set:
             return []
         visited = set()
         sizes = []
-        nbr = ([(1, 0), (-1, 0), (0, 1), (0, -1)] if connectivity == 4
-               else [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)])
+        nbr = ([(1, 0), (-1, 0), (0, 1),
+                (0, -1)] if connectivity == 4 else [(1, 0), (-1, 0), (0, 1),
+                                                    (0, -1), (1, 1), (1, -1),
+                                                    (-1, 1), (-1, -1)])
         for px in pixel_set:
             if px in visited:
                 continue
@@ -128,7 +210,8 @@ class GraphFeatureExtractor:
                         stack.append(nb)
             sizes.append(sz)
         return sizes
-
+    # Rasterize a single graph edge into a local pixel set.
+    # The local buffer limits memory usage while preserving line thickness effects.
     @staticmethod
     def _get_edge_pixels(pt1, pt2, thick):
         x1, y1 = int(round(pt1[0])), int(round(pt1[1]))
@@ -140,13 +223,15 @@ class GraphFeatureExtractor:
         if h <= 0 or w <= 0:
             return set()
         buf = np.zeros((h, w), dtype=np.uint8)
-        cv2.line(buf, (x1 - min_x, y1 - min_y), (x2 - min_x, y2 - min_y),
-                 255, thick, cv2.LINE_AA)
+        cv2.line(buf, (x1 - min_x, y1 - min_y), (x2 - min_x, y2 - min_y), 255,
+                 thick, cv2.LINE_AA)
         ys, xs = np.where(buf > 0)
         return {(int(y + min_y), int(x + min_x)) for y, x in zip(ys, xs)}
 
     # ==================== Graph I/O ====================
-
+    # Load a graph JSON file and merge nodes with identical coordinates.
+    # Deduplication prevents visually identical nodes from being treated as separate
+    # physical junctions.
     def _load_graph(self, fp):
         data = json.loads(Path(fp).read_text())
         G0 = nx.Graph()
@@ -168,7 +253,9 @@ class GraphFeatureExtractor:
             if a != b:
                 G.add_edge(a, b)
         return G
-
+    # Render the vector graph into a binary image.
+    # This image acts as the bridge between graph descriptors and raster-based pore
+    # or contact descriptors.
     def _render_image(self, G):
         pos = np.array([G.nodes[n]["pos"] for n in G.nodes])
         min_xy, max_xy = pos.min(0), pos.max(0)
@@ -182,18 +269,21 @@ class GraphFeatureExtractor:
         return img, id2pt
 
     # ==================== Structural Features (34) ====================
-
+    # Compute basic size and length descriptors of the graph.
     def _basic_size(self, G):
         pos = nx.get_node_attributes(G, "pos")
-        lengths = np.array([math.dist(pos[u], pos[v]) for u, v in G.edges], dtype=float)
+        lengths = np.array([math.dist(pos[u], pos[v]) for u, v in G.edges],
+                           dtype=float)
         nn, ne = G.number_of_nodes(), G.number_of_edges()
         return dict(
-            n_node=nn, n_edge=ne,
+            n_node=nn,
+            n_edge=ne,
             total_length=float(lengths.sum()),
             mean_edge_len=float(lengths.mean() if lengths.size else 0.0),
-            len_cv=float(lengths.std() / lengths.mean()) if (lengths.size and lengths.mean()) else 0.0,
+            len_cv=float(lengths.std() / lengths.mean()) if
+            (lengths.size and lengths.mean()) else 0.0,
         )
-
+    # Compute degree-distribution descriptors that summarize local connectivity.
     def _degree_stats(self, G):
         deg = np.array([d for _, d in G.degree()], dtype=int)
         p = np.bincount(deg) / deg.size
@@ -202,11 +292,14 @@ class GraphFeatureExtractor:
             deg4_count=int((deg == 4).sum()),
             degree_entropy=float(entropy(p[p > 0], base=2)),
         )
-
+    # Compute orientation descriptors to characterize directional bias and anisotropy.
     def _orientation_stats(self, G):
         pos = nx.get_node_attributes(G, "pos")
-        ang = np.array([math.atan2(pos[v][1] - pos[u][1], pos[v][0] - pos[u][0])
-                        for u, v in G.edges], dtype=float)
+        ang = np.array([
+            math.atan2(pos[v][1] - pos[u][1], pos[v][0] - pos[u][0])
+            for u, v in G.edges
+        ],
+                       dtype=float)
         if ang.size == 0:
             return dict(orient_entropy=0.0, anisotropy=0.0)
         bins = np.histogram(ang, bins=18, range=(-math.pi, math.pi))[0]
@@ -216,16 +309,19 @@ class GraphFeatureExtractor:
         eig = np.linalg.eigvalsh(Q)
         ani = float((eig[1] - eig[0]) / (eig[1] + eig[0] + 1e-12))
         return dict(orient_entropy=oe, anisotropy=ani)
-
+    # Compute spatial moment descriptors describing the distribution of nodes around
+    # the geometric center.
     def _spatial_moments(self, G):
         pos = np.array([G.nodes[n]["pos"] for n in G.nodes])
         cen = pos.mean(0)
         deg = np.array([d for _, d in G.degree()])
         return dict(
-            radius_gyration=float(np.sqrt(((pos - cen) ** 2).sum(1).mean())),
-            moment_total=float(np.sum(np.linalg.norm(pos - cen, axis=1) * deg)),
+            radius_gyration=float(np.sqrt(((pos - cen)**2).sum(1).mean())),
+            moment_total=float(np.sum(np.linalg.norm(pos - cen, axis=1) *
+                                      deg)),
         )
-
+    # Compute connectivity and spectral descriptors of the graph.
+    # These features provide coarse indicators of global graph robustness.
     def _path_connectivity(self, G):
         cc_coef = float(nx.average_clustering(G))
         try:
@@ -233,36 +329,46 @@ class GraphFeatureExtractor:
         except nx.NetworkXError:
             fiedler = 0.0
         GC = G.subgraph(max(nx.connected_components(G), key=len))
-        aspl = float(nx.average_shortest_path_length(GC)) if GC.number_of_nodes() > 1 else 0.0
+        aspl = float(nx.average_shortest_path_length(
+            GC)) if GC.number_of_nodes() > 1 else 0.0
         L = nx.laplacian_matrix(G).astype(float)
         try:
-            lmax = float(eigsh(L, k=1, which="LA", return_eigenvectors=False)[0])
+            lmax = float(
+                eigsh(L, k=1, which="LA", return_eigenvectors=False)[0])
         except Exception:
             lmax = 0.0
         sgr = float(fiedler / (lmax + 1e-12)) if lmax else 0.0
-        return dict(clustering_coef=cc_coef, fiedler_value=fiedler,
-                    lambda_max=lmax, spectral_gap_ratio=sgr, aspl_giant=aspl)
-
+        return dict(clustering_coef=cc_coef,
+                    fiedler_value=fiedler,
+                    lambda_max=lmax,
+                    spectral_gap_ratio=sgr,
+                    aspl_giant=aspl)
+    # Estimate boundary participation and box-counting complexity.
+    # These descriptors summarize how the network occupies the specimen domain.
     def _boundary_fractal(self, G):
         pos = np.array([G.nodes[n]["pos"] for n in G.nodes])
         ne = G.number_of_edges()
         eps = 1e-6
         xmin, xmax = pos[:, 0].min(), pos[:, 0].max()
         ymin, ymax = pos[:, 1].min(), pos[:, 1].max()
-        bn = {n for n, (x, y) in nx.get_node_attributes(G, "pos").items()
-              if abs(x - xmin) < eps or abs(x - xmax) < eps
-              or abs(y - ymin) < eps or abs(y - ymax) < eps}
+        bn = {
+            n
+            for n, (x, y) in nx.get_node_attributes(G, "pos").items()
+            if abs(x - xmin) < eps or abs(x - xmax) < eps
+            or abs(y - ymin) < eps or abs(y - ymax) < eps
+        }
         be = [(u, v) for u, v in G.edges if u in bn or v in bn]
         bf = len(be) / ne if ne else 0.0
         sizes, counts = [], []
         for k in range(1, 7):
-            s = 1 / 2 ** k
+            s = 1 / 2**k
             idx = np.floor(pos / s).astype(int)
             counts.append(len({tuple(i) for i in idx}))
             sizes.append(1 / s)
         fd = float(linregress(np.log(sizes), np.log(counts)).slope)
         return dict(boundary_frac=bf, fractal_dim_box=fd)
-
+    # Compute redundancy and core-number descriptors.
+    # These features provide graph-theoretic proxies for alternative load paths.
     def _redundancy_kcore(self, G):
         nn, ne = G.number_of_nodes(), G.number_of_edges()
         ri = float(ne - 2 * nn + 3)
@@ -270,15 +376,21 @@ class GraphFeatureExtractor:
         cn = nx.core_number(G)
         mk = max(cn.values())
         kf = float(sum(1 for v in cn.values() if v == mk) / nn)
-        return dict(rigidity_index=ri, redundancy_ratio=rr, max_k_core=mk, kcore_frac=kf)
-
+        return dict(rigidity_index=ri,
+                    redundancy_ratio=rr,
+                    max_k_core=mk,
+                    kcore_frac=kf)
+    # Count selected cycle structures used as compact mesh-topology indicators.
     def _cycle_features(self, G):
         ne = G.number_of_edges()
         tc = sum(nx.triangles(G).values()) // 3
         qc = len([c for c in nx.cycle_basis(G) if len(c) == 4])
-        return dict(triangle_count=tc, triangle_ratio=float(tc / ne) if ne else 0.0,
-                    quad_count=qc, quad_ratio=float(qc / ne) if ne else 0.0)
-
+        return dict(triangle_count=tc,
+                    triangle_ratio=float(tc / ne) if ne else 0.0,
+                    quad_count=qc,
+                    quad_ratio=float(qc / ne) if ne else 0.0)
+    # Estimate vertical path efficiency between opposite boundaries.
+    # The resulting descriptors are intended as coarse directionality indicators.
     def _vertical_shortestness(self, G):
         pos = nx.get_node_attributes(G, "pos")
         yv = np.array([p[1] for p in pos.values()])
@@ -296,28 +408,38 @@ class GraphFeatureExtractor:
             d = nx.single_source_dijkstra_path_length(G, s, weight="w")
             dists.extend(d[t] for t in bot if t in d)
         avg = float(np.mean(dists)) if dists else 0.0
-        return dict(avg_shortest_dy=avg, straightness=float(avg / (ymax - ymin + 1e-12)))
-
+        return dict(avg_shortest_dy=avg,
+                    straightness=float(avg / (ymax - ymin + 1e-12)))
+    # Extract mesh-hole descriptors from the rendered binary image.
+    # This step treats enclosed white regions as image-domain pores or cells.
     def _mesh_holes(self, img):
         res = self.canvas_size
         work = img.copy()
         cv2.floodFill(work, None, (0, 0), 128)
         mask = work == 255
         if mask.sum() == 0:
-            return dict(mesh_median_area=0.0, mesh_cv_area=0.0, mesh_max_area_ratio=0.0)
-        _, _, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+            return dict(mesh_median_area=0.0,
+                        mesh_cv_area=0.0,
+                        mesh_max_area_ratio=0.0)
+        _, _, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8),
+                                                       8)
         areas = st[1:, cv2.CC_STAT_AREA].astype(float)
         return dict(
             mesh_median_area=float(np.median(areas)),
-            mesh_cv_area=float(np.std(areas) / areas.mean()) if areas.mean() else 0.0,
+            mesh_cv_area=float(np.std(areas) /
+                               areas.mean()) if areas.mean() else 0.0,
             mesh_max_area_ratio=float(areas.max() / (res * res)),
         )
-
+    # Compute edge betweenness descriptors.
+    # Approximation is used for large graphs to keep extraction practical.
     def _betweenness_edges(self, G):
         if G.number_of_nodes() <= 2500:
             bc = nx.edge_betweenness_centrality(G, normalized=True)
         else:
-            bc = nx.edge_betweenness_centrality(G, k=200, normalized=True, seed=0)
+            bc = nx.edge_betweenness_centrality(G,
+                                                k=200,
+                                                normalized=True,
+                                                seed=0)
         vals = np.array(list(bc.values()))
         return dict(
             edge_betweenness_max=float(vals.max() if vals.size else 0.0),
@@ -325,7 +447,8 @@ class GraphFeatureExtractor:
         )
 
     # ==================== Pore Features (18) ====================
-
+    # Extract pore descriptors from the rendered image.
+    # The flood-fill step separates exterior background from enclosed pore regions.
     def _pore_features(self, img):
         res = self.canvas_size
         total_px = res * res
@@ -336,34 +459,48 @@ class GraphFeatureExtractor:
 
         zero = dict(
             # --- original 10 ---
-            largest_pore_ratio=0.0, top_area_sum_ratio=0.0,
-            top_convexity_min=1.0, top_convexity_mean=1.0, top_circularity_min=1.0,
-            big_pore_count=0, total_pore_count=0,
-            total_pore_ratio=0.0, center_pore_ratio=0.0, edge_pore_ratio=0.0,
+            largest_pore_ratio=0.0,
+            top_area_sum_ratio=0.0,
+            top_convexity_min=1.0,
+            top_convexity_mean=1.0,
+            top_circularity_min=1.0,
+            big_pore_count=0,
+            total_pore_count=0,
+            total_pore_ratio=0.0,
+            center_pore_ratio=0.0,
+            edge_pore_ratio=0.0,
             # --- new 8 ---
-            pore_area_cv=0.0, pore_area_skew=0.0, pore_area_kurtosis=0.0,
-            pore_area_max_over_mean=1.0, pore_large_area_frac=0.0,
-            pore_count_large_frac=0.0, pore_density=0.0, pore_spatial_cv=0.0,
+            pore_area_cv=0.0,
+            pore_area_skew=0.0,
+            pore_area_kurtosis=0.0,
+            pore_area_max_over_mean=1.0,
+            pore_large_area_frac=0.0,
+            pore_count_large_frac=0.0,
+            pore_density=0.0,
+            pore_spatial_cv=0.0,
         )
         if cc_n <= 1:
             return zero
 
         # ---- all pore areas & centroids (label 0 = background) ----
-        all_areas = st[1:, cv2.CC_STAT_AREA].astype(float)   # (n_pores,)
-        all_cxy   = cen[1:]                                    # (n_pores, 2)
-        n_pores   = len(all_areas)
+        all_areas = st[1:, cv2.CC_STAT_AREA].astype(float)  # (n_pores,)
+        all_cxy = cen[1:]  # (n_pores, 2)
+        n_pores = len(all_areas)
 
         # ---- NEW: distribution statistics (scale-invariant) ----
         if n_pores >= 2:
             mean_a = float(all_areas.mean())
-            std_a  = float(all_areas.std(ddof=0))
-            pore_area_cv          = std_a / mean_a if mean_a > 0 else 0.0
-            pore_area_skew        = float(sp_skew(all_areas))
-            pore_area_kurtosis    = float(sp_kurtosis(all_areas))
-            pore_area_max_over_mean = float(all_areas.max() / mean_a) if mean_a > 0 else 1.0
+            std_a = float(all_areas.std(ddof=0))
+            pore_area_cv = std_a / mean_a if mean_a > 0 else 0.0
+            pore_area_skew = float(sp_skew(all_areas))
+            pore_area_kurtosis = float(sp_kurtosis(all_areas))
+            pore_area_max_over_mean = float(all_areas.max() /
+                                            mean_a) if mean_a > 0 else 1.0
             large_mask = all_areas > 2.0 * mean_a
             total_area_sum = float(all_areas.sum())
-            pore_large_area_frac  = float(all_areas[large_mask].sum() / total_area_sum) if total_area_sum > 0 else 0.0
+            pore_large_area_frac = float(
+                all_areas[large_mask].sum() /
+                total_area_sum) if total_area_sum > 0 else 0.0
             pore_count_large_frac = float(large_mask.sum() / n_pores)
         else:
             pore_area_cv = 0.0
@@ -415,36 +552,44 @@ class GraphFeatureExtractor:
         epr = sum(a for _, a, _ in ep) / total_px
 
         big = sorted([(i, a, r) for i, a, r in cp if r >= self.area_thresh],
-                     key=lambda x: x[1], reverse=True)
+                     key=lambda x: x[1],
+                     reverse=True)
         bpc = len(big)
         top = big[:self.top_k]
-        base = dict(big_pore_count=bpc, total_pore_count=tpc,
-                    total_pore_ratio=tpr, center_pore_ratio=cpr, edge_pore_ratio=epr)
+        base = dict(big_pore_count=bpc,
+                    total_pore_count=tpc,
+                    total_pore_ratio=tpr,
+                    center_pore_ratio=cpr,
+                    edge_pore_ratio=epr)
         if not top:
             return {**zero, **base, **new_feats}
 
         def _shape(lid):
             m = (labels == lid).astype(np.uint8)
-            cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
             if not cnts:
                 return 1.0, 1.0
             c = cnts[0]
             ar = cv2.contourArea(c)
             ha = cv2.contourArea(cv2.convexHull(c))
             pe = cv2.arcLength(c, True)
-            return (ar / ha if ha else 1.0), (4 * np.pi * ar / pe ** 2 if pe else 1.0)
+            return (ar / ha if ha else 1.0), (4 * np.pi * ar /
+                                              pe**2 if pe else 1.0)
 
         shapes = [_shape(i) for i, _, _ in top]
         ars = [r for _, _, r in top]
-        return dict(
-            largest_pore_ratio=ars[0], top_area_sum_ratio=sum(ars),
-            top_convexity_min=min(s[0] for s in shapes),
-            top_convexity_mean=float(np.mean([s[0] for s in shapes])),
-            top_circularity_min=min(s[1] for s in shapes),
-            **base, **new_feats)
+        return dict(largest_pore_ratio=ars[0],
+                    top_area_sum_ratio=sum(ars),
+                    top_convexity_min=min(s[0] for s in shapes),
+                    top_convexity_mean=float(np.mean([s[0] for s in shapes])),
+                    top_circularity_min=min(s[1] for s in shapes),
+                    **base,
+                    **new_feats)
 
     # ==================== Contact Features (42) ====================
-
+    # Extract contact and overlap descriptors between thickened graph edges.
+    # Adjacent edges sharing a node are excluded from nonlocal overlap counting.
     def _contact_features(self, G, id2pt):
         edges = list(G.edges())
         E = len(edges)
@@ -461,8 +606,10 @@ class GraphFeatureExtractor:
                 for j in range(i + 1, len(lst)):
                     adj_pairs.add(tuple(sorted((lst[i], lst[j]))))
 
-        edge_pixels = [self._get_edge_pixels(id2pt[u], id2pt[v], self.thick)
-                       for u, v in edges]
+        edge_pixels = [
+            self._get_edge_pixels(id2pt[u], id2pt[v], self.thick)
+            for u, v in edges
+        ]
         ep_counts = [len(s) for s in edge_pixels]
         ep_sum = int(np.sum(ep_counts))
         ep_union = set().union(*edge_pixels) if edge_pixels else set()
@@ -496,62 +643,106 @@ class GraphFeatureExtractor:
         raw_n = len(raw_olap)
         pair_n = len(olap)
 
-        cc_st = self._safe_stats(self._cc_sizes_from_pixels(olap_all, self.connectivity))
+        cc_st = self._safe_stats(
+            self._cc_sizes_from_pixels(olap_all, self.connectivity))
         pr_st = self._safe_stats([len(p) for p in olap.values()])
         ec_st = self._safe_stats(ecd.tolist())
 
         cl_len = float(sum(math.dist(id2pt[u], id2pt[v]) for u, v in edges))
-        ca = self.canvas_size ** 2
+        ca = self.canvas_size**2
         ewc = int((ecd > 0).sum())
         ol_approx = olap_n / max(self.thick, 1)
 
         return {
-            "contact_thick": int(self.thick),
-            "contact_canvas_size": int(self.canvas_size),
-            "contact_nodes": N,
-            "contact_edges": E,
-            "contact_edge_pixel_union_count": ep_union_n,
-            "contact_edge_pixel_sum": ep_sum,
-            "contact_raw_overlap_pixel_count": raw_n,
-            "contact_overlap_pixel_count": olap_n,
-            "contact_overlap_pair_count": pair_n,
-            "contact_overlap_pairs_per_edge": pair_n / E if E else 0.0,
-            "contact_edges_with_contact_count": ewc,
-            "contact_edges_with_contact_ratio": ewc / E if E else 0.0,
-            "contact_overlap_pixel_ratio_union": olap_n / ep_union_n if ep_union_n else 0.0,
-            "contact_raw_overlap_pixel_ratio_union": raw_n / ep_union_n if ep_union_n else 0.0,
-            "contact_overlap_pixel_ratio_canvas": olap_n / ca if ca else 0.0,
-            "contact_overlap_length_px_approx": ol_approx,
-            "contact_overlap_length_ratio_centerline": ol_approx / cl_len if cl_len else 0.0,
-            "contact_centerline_length_px": cl_len,
-            "contact_overlap_pair_size_sum": pr_st["sum"],
-            "contact_overlap_pair_size_mean": pr_st["mean"],
-            "contact_overlap_pair_size_median": pr_st["median"],
-            "contact_overlap_pair_size_max": pr_st["max"],
-            "contact_overlap_pair_size_std": pr_st["std"],
-            "contact_overlap_pair_size_q75": pr_st["q75"],
-            "contact_overlap_pair_size_q90": pr_st["q90"],
-            "contact_overlap_pair_size_q95": pr_st["q95"],
-            "contact_overlap_cc_count": cc_st["count"],
-            "contact_overlap_cc_size_sum": cc_st["sum"],
-            "contact_overlap_cc_size_mean": cc_st["mean"],
-            "contact_overlap_cc_size_median": cc_st["median"],
-            "contact_overlap_cc_size_max": cc_st["max"],
-            "contact_overlap_cc_size_std": cc_st["std"],
-            "contact_overlap_cc_size_q75": cc_st["q75"],
-            "contact_overlap_cc_size_q90": cc_st["q90"],
-            "contact_overlap_cc_size_q95": cc_st["q95"],
-            "contact_edge_contact_degree_mean": ec_st["mean"],
-            "contact_edge_contact_degree_median": ec_st["median"],
-            "contact_edge_contact_degree_max": ec_st["max"],
-            "contact_edge_contact_degree_std": ec_st["std"],
-            "contact_edge_contact_degree_q75": ec_st["q75"],
-            "contact_edge_contact_degree_q90": ec_st["q90"],
-            "contact_edge_contact_degree_q95": ec_st["q95"],
+            "contact_thick":
+            int(self.thick),
+            "contact_canvas_size":
+            int(self.canvas_size),
+            "contact_nodes":
+            N,
+            "contact_edges":
+            E,
+            "contact_edge_pixel_union_count":
+            ep_union_n,
+            "contact_edge_pixel_sum":
+            ep_sum,
+            "contact_raw_overlap_pixel_count":
+            raw_n,
+            "contact_overlap_pixel_count":
+            olap_n,
+            "contact_overlap_pair_count":
+            pair_n,
+            "contact_overlap_pairs_per_edge":
+            pair_n / E if E else 0.0,
+            "contact_edges_with_contact_count":
+            ewc,
+            "contact_edges_with_contact_ratio":
+            ewc / E if E else 0.0,
+            "contact_overlap_pixel_ratio_union":
+            olap_n / ep_union_n if ep_union_n else 0.0,
+            "contact_raw_overlap_pixel_ratio_union":
+            raw_n / ep_union_n if ep_union_n else 0.0,
+            "contact_overlap_pixel_ratio_canvas":
+            olap_n / ca if ca else 0.0,
+            "contact_overlap_length_px_approx":
+            ol_approx,
+            "contact_overlap_length_ratio_centerline":
+            ol_approx / cl_len if cl_len else 0.0,
+            "contact_centerline_length_px":
+            cl_len,
+            "contact_overlap_pair_size_sum":
+            pr_st["sum"],
+            "contact_overlap_pair_size_mean":
+            pr_st["mean"],
+            "contact_overlap_pair_size_median":
+            pr_st["median"],
+            "contact_overlap_pair_size_max":
+            pr_st["max"],
+            "contact_overlap_pair_size_std":
+            pr_st["std"],
+            "contact_overlap_pair_size_q75":
+            pr_st["q75"],
+            "contact_overlap_pair_size_q90":
+            pr_st["q90"],
+            "contact_overlap_pair_size_q95":
+            pr_st["q95"],
+            "contact_overlap_cc_count":
+            cc_st["count"],
+            "contact_overlap_cc_size_sum":
+            cc_st["sum"],
+            "contact_overlap_cc_size_mean":
+            cc_st["mean"],
+            "contact_overlap_cc_size_median":
+            cc_st["median"],
+            "contact_overlap_cc_size_max":
+            cc_st["max"],
+            "contact_overlap_cc_size_std":
+            cc_st["std"],
+            "contact_overlap_cc_size_q75":
+            cc_st["q75"],
+            "contact_overlap_cc_size_q90":
+            cc_st["q90"],
+            "contact_overlap_cc_size_q95":
+            cc_st["q95"],
+            "contact_edge_contact_degree_mean":
+            ec_st["mean"],
+            "contact_edge_contact_degree_median":
+            ec_st["median"],
+            "contact_edge_contact_degree_max":
+            ec_st["max"],
+            "contact_edge_contact_degree_std":
+            ec_st["std"],
+            "contact_edge_contact_degree_q75":
+            ec_st["q75"],
+            "contact_edge_contact_degree_q90":
+            ec_st["q90"],
+            "contact_edge_contact_degree_q95":
+            ec_st["q95"],
         }
 
     # ==================== Public API ====================
-
+    # Public extraction API for one dataset key.
+    # The returned dictionary contains the key and the full fixed feature set.
     def extract(self, key: str) -> dict:
         fp = self.root / f"{key}.json"
         if not fp.exists():
@@ -573,7 +764,8 @@ class GraphFeatureExtractor:
         feat.update(self._pore_features(img))
         feat.update(self._contact_features(G, id2pt))
         return {"key": key, **feat}
-
+    # Batch extraction wrapper.
+    # Missing graph files are collected separately to keep large dataset jobs robust.
     def batch(self, keys):
         recs, missing = [], []
         for k in tqdm(keys, desc="Extracting 94-d features"):
@@ -586,7 +778,9 @@ class GraphFeatureExtractor:
 
 
 # ==================== CLI ====================
-
+# CLI entry point for dataset feature generation.
+# It joins extracted graph descriptors with load labels and writes a model-ready
+# CSV table using the fixed feature order.
 if __name__ == "__main__":
     GRAPH_ROOT = Path(r"D:\CODE\Abaqus_batch_test\Dataset\Weld_Graph_Data")
     CSV_FORCE = Path(r"D:\CODE\Abaqus_batch_test\data_analysis\combined_forces_cleaned.csv")
