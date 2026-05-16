@@ -11,21 +11,42 @@ from tqdm import tqdm
 import networkx as nx
 import matplotlib.pyplot as plt
 from shapely.geometry import LineString, Point
+"""
+Synthetic dataset generator for regular square-cell fiber networks.
+
+The generator creates parametrically perturbed square networks, tiles them into
+larger specimens, exports graph JSON files and images, and then converts visual
+crossings into explicit welded graph topology for downstream feature extraction
+and simulation workflows.
+"""
 # --------------------
+# SquareGraphGenerator owns the dataset folder layout and the full generation
+# workflow for graph data, image data, and welded graph data.
 class SquareGraphGenerator:
+# Create required dataset directories at initialization.
+# Keeping the directory structure centralized reduces path inconsistencies across
+# generation, visualization, and post-processing steps.
     def __init__(self, base_path=os.getcwd()):
         self.base_path = base_path
         self.dataset_path = os.path.join(self.base_path, 'Dataset')
         self.graph_data_path = os.path.join(self.dataset_path, 'Graph_Data')
         self.image_data_path = os.path.join(self.dataset_path, 'Image_Data')
-        self.weld_graph_data_path = os.path.join(self.dataset_path, 'Weld_Graph_Data')
+        self.weld_graph_data_path = os.path.join(self.dataset_path,
+                                                 'Weld_Graph_Data')
         os.makedirs(self.graph_data_path, exist_ok=True)
         os.makedirs(self.image_data_path, exist_ok=True)
         os.makedirs(self.weld_graph_data_path, exist_ok=True)
-
+    # Generate the unperturbed square base graph.
+    # Additional points on each side define the degrees of freedom later used for
+    # symmetric geometric perturbations.
     def generate_square_graph(self, side_length, num_points_per_side):
         G = nx.Graph()
-        vertices = {'A': (0, 0), 'B': (side_length, 0), 'C': (side_length, side_length), 'D': (0, side_length)}
+        vertices = {
+            'A': (0, 0),
+            'B': (side_length, 0),
+            'C': (side_length, side_length),
+            'D': (0, side_length)
+        }
         for vertex, position in vertices.items():
             G.add_node(vertex, pos=position)
         edges = [('A', 'B'), ('B', 'C'), ('C', 'D'), ('D', 'A')]
@@ -46,7 +67,9 @@ class SquareGraphGenerator:
                     prev_point_name = f"{start}{end}{j-1}"
                     G.add_edge(prev_point_name, point_name)
         return G
-
+    # Move one group of corresponding side points using a symmetry-preserving rule.
+    # The offset is expressed relative to the side length so that perturbation
+    # magnitudes remain comparable across scales.
     def move_AB(self, G, num, dx, dy, side_length):
         new_G = nx.Graph()
         new_G.add_nodes_from(G.nodes(data=True))
@@ -60,38 +83,53 @@ class SquareGraphGenerator:
         for node, (dx_offset, dy_offset) in positions.items():
             if node in new_G.nodes:
                 current_pos = new_G.nodes[node]['pos']
-                new_G.nodes[node]['pos'] = (current_pos[0] + dx_offset, current_pos[1] + dy_offset)
+                new_G.nodes[node]['pos'] = (current_pos[0] + dx_offset,
+                                            current_pos[1] + dy_offset)
         new_G.remove_edges_from(list(new_G.edges))
         node_list = sorted(new_G.nodes)
         for i in range(len(node_list)):
             new_G.add_edge(node_list[i], node_list[(i + 1) % len(node_list)])
         return new_G
-
-    def scale_and_tile_graph(self, new_G, tiling_number, scale_size_num=1, side_length=10):
+    # Tile and scale the perturbed unit graph into a specimen-level network.
+    # This separates local cell geometry from the final specimen size.
+    def scale_and_tile_graph(self,
+                             new_G,
+                             tiling_number,
+                             scale_size_num=1,
+                             side_length=10):
         scaled_tiled_G = nx.Graph()
         original_positions = nx.get_node_attributes(new_G, 'pos')
-        scale_factor = scale_size_num / (side_length * tiling_number)  # 1 / (10 * 6) = 0.016666...
+        scale_factor = scale_size_num / (side_length * tiling_number
+                                         )  # 1 / (10 * 6) = 0.016666...
         for i in range(tiling_number):
             for j in range(tiling_number):
                 for node, position in original_positions.items():
                     new_x = (position[0] + i * side_length) * scale_factor
                     new_y = (position[1] + j * side_length) * scale_factor
-                    scaled_tiled_G.add_node(f"{node}_{i}_{j}", pos=(new_x, new_y))
+                    scaled_tiled_G.add_node(f"{node}_{i}_{j}",
+                                            pos=(new_x, new_y))
         for i in range(tiling_number):
             for j in range(tiling_number):
                 for edge in new_G.edges():
                     node1, node2 = edge
-                    scaled_tiled_G.add_edge(f"{node1}_{i}_{j}", f"{node2}_{i}_{j}")
+                    scaled_tiled_G.add_edge(f"{node1}_{i}_{j}",
+                                            f"{node2}_{i}_{j}")
         return scaled_tiled_G
-
-    def save_graph_to_json(self, G, original_filename, directory='Graph_Data', suffix="_modified"):
+    # Save a graph object in node-link JSON format for compatibility with NetworkX
+    # and downstream processing scripts.
+    def save_graph_to_json(self,
+                           G,
+                           original_filename,
+                           directory='Graph_Data',
+                           suffix="_modified"):
         base_name, ext = os.path.splitext(original_filename)
         new_filename = f"{base_name}{suffix}{ext}"
         new_path = os.path.join(self.dataset_path, directory, new_filename)
         graph_data = nx.node_link_data(G)
         with open(new_path, 'w', encoding='utf-8') as f:
             json.dump(graph_data, f, ensure_ascii=False, indent=4)
-
+    # Visualize a generated graph as an image.
+    # The image output is mainly used for inspection and contour-based workflows.
     def visualize_and_save_graph(self, G, save_path):
         pos = nx.get_node_attributes(G, 'pos')
         x_values, y_values = zip(*pos.values())
@@ -99,7 +137,7 @@ class SquareGraphGenerator:
         y_min, y_max = min(y_values), max(y_values)
         x_range, y_range = x_max - x_min, y_max - y_min
         aspect_ratio = x_range / y_range if y_range != 0 else 1
-        plt.figure(figsize=(6, 6)) #plt.figure(figsize=(6, 6))
+        plt.figure(figsize=(6, 6))  #plt.figure(figsize=(6, 6))
         nx.draw_networkx_edges(G, pos, width=3)  #width=1
         ax = plt.gca()
         for spine in ax.spines.values():
@@ -110,22 +148,43 @@ class SquareGraphGenerator:
         plt.ylim(y_min - 0.05 * y_range, y_max + 0.05 * y_range)
         plt.savefig(save_path, bbox_inches='tight')
         plt.close()
-
-    def generate_batch(self, num_images=10, tiling_number=6, side_length=10, num_points_per_side=5, scale_size_num=1):
+    # Generate a batch of random network samples.
+    # Each sample is identified by its tiling number and offset parameters so that
+    # generated files remain traceable.
+    def generate_batch(self,
+                       num_images=10,
+                       tiling_number=6,
+                       side_length=10,
+                       num_points_per_side=5,
+                       scale_size_num=1):
         for i in tqdm(range(num_images), desc="Generating Images"):
-            dx_dy_values = [(round(random.uniform(-0.5, 0.5), 2), round(random.uniform(-0.5, 0.5), 2)) for _ in range(5)] #0.5
+            dx_dy_values = [(round(random.uniform(-0.5, 0.5),
+                                   2), round(random.uniform(-0.5, 0.5), 2))
+                            for _ in range(5)]  #0.5
             tiling_number_int = int(tiling_number)
-            save_name = str(tiling_number_int) + '_' + '_'.join([f'{dx}_{dy}' for dx, dy in dx_dy_values])
-            save_path_img = os.path.join(self.image_data_path, save_name + '.png')
-            save_path_json = os.path.join(self.graph_data_path, save_name + '.json')
+            save_name = str(tiling_number_int) + '_' + '_'.join(
+                [f'{dx}_{dy}' for dx, dy in dx_dy_values])
+            save_path_img = os.path.join(self.image_data_path,
+                                         save_name + '.png')
+            save_path_json = os.path.join(self.graph_data_path,
+                                          save_name + '.json')
             G = self.generate_square_graph(side_length, num_points_per_side)
             for idx, (dx, dy) in enumerate(dx_dy_values, start=1):
                 G = self.move_AB(G, idx, dx, dy, side_length)
-            scaled_tiled_G = self.scale_and_tile_graph(G, tiling_number, scale_size_num=scale_size_num, side_length=side_length)
+            scaled_tiled_G = self.scale_and_tile_graph(
+                G,
+                tiling_number,
+                scale_size_num=scale_size_num,
+                side_length=side_length)
             original_filename = f"{save_name}.json"
-            self.save_graph_to_json(scaled_tiled_G, original_filename, directory='Graph_Data', suffix="")
+            self.save_graph_to_json(scaled_tiled_G,
+                                    original_filename,
+                                    directory='Graph_Data',
+                                    suffix="")
             self.visualize_and_save_graph(scaled_tiled_G, save_path_img)
-
+    # Convert geometric edge intersections into explicit graph nodes.
+    # This step transforms visual crossings into welded topology for graph-based
+    # feature extraction and analysis.
     def intersection_graph(self, original_graph):
         G = copy.deepcopy(original_graph)
         edges = list(G.edges(data=True))
@@ -133,7 +192,8 @@ class SquareGraphGenerator:
         new_edges = []
         intersections = {}
         # Iterate over all unique pairs of edges
-        for (u1, v1, data1), (u2, v2, data2) in itertools.combinations(edges, 2):
+        for (u1, v1, data1), (u2, v2,
+                              data2) in itertools.combinations(edges, 2):
             # Create LineStrings for both edges
             pos_u1 = G.nodes[u1]['pos']
             pos_v1 = G.nodes[v1]['pos']
@@ -161,7 +221,8 @@ class SquareGraphGenerator:
             pos_u = G.nodes[u]['pos']
             pos_v = G.nodes[v]['pos']
             line = LineString([pos_u, pos_v])
-            sorted_points = sorted(points, key=lambda point: line.project(Point(point)))
+            sorted_points = sorted(
+                points, key=lambda point: line.project(Point(point)))
             prev_node = u
             for point in sorted_points:
                 ix, iy = point
@@ -172,7 +233,8 @@ class SquareGraphGenerator:
         G.remove_edges_from(edges)
         G.add_edges_from(new_edges)
         return G
-
+    # Remove self-joining or zero-length edges after intersection processing.
+    # This cleanup improves robustness of subsequent graph algorithms.
     def Remove_self_join(self, original_graph):
         G = copy.deepcopy(original_graph)
         edges = list(G.edges(data=True))
@@ -183,9 +245,11 @@ class SquareGraphGenerator:
         G.remove_edges_from(edges)
         G.add_edges_from(new_edges)
         return G
-
+    # Process all raw graph JSON files into welded graph JSON files.
+    # The resulting graphs contain explicit intersection nodes and cleaned edges.
     def process_graph_data(self):
-        for filename in tqdm(os.listdir(self.graph_data_path), desc="Processing JSON files"):
+        for filename in tqdm(os.listdir(self.graph_data_path),
+                             desc="Processing JSON files"):
             if filename.endswith('.json'):
                 input_path = os.path.join(self.graph_data_path, filename)
                 with open(input_path, 'r', encoding='utf-8') as f:
@@ -194,16 +258,21 @@ class SquareGraphGenerator:
                 G_intersection = self.intersection_graph(G_original)
                 G_intersection = self.Remove_self_join(G_intersection)
                 output_path = os.path.join(self.weld_graph_data_path, filename)
-                self.save_graph_to_json_custom(G_intersection, filename, directory='Weld_Graph_Data')
-
+                self.save_graph_to_json_custom(G_intersection,
+                                               filename,
+                                               directory='Weld_Graph_Data')
+    # Save a processed graph to a selected dataset subdirectory.
     def save_graph_to_json_custom(self, G, filename, directory='Graph_Data'):
         new_path = os.path.join(self.dataset_path, directory, filename)
         graph_data = nx.node_link_data(G)
         with open(new_path, 'w', encoding='utf-8') as f:
             json.dump(graph_data, f, ensure_ascii=False, indent=4)
 
+# Script entry point for generating the dataset and then constructing welded
+# graph topology from the generated raw graphs.
 if __name__ == "__main__":
     generator = SquareGraphGenerator()
     for tiling_number in range(3, 4):  # 3, 11
-        generator.generate_batch(num_images=1000, tiling_number=tiling_number)#1000
+        generator.generate_batch(num_images=1000,
+                                 tiling_number=tiling_number)  #1000
     generator.process_graph_data()
