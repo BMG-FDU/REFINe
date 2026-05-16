@@ -11,7 +11,8 @@ REFINe is a manufacturability-informed and physics-consistent AI framework for t
 - **Repository:** https://github.com/BMG-FDU/REFINe
 
 ---
-
+![image](https://github.com/BMG-FDU/REFINe/blob/main/image/TOC.png)
+---
 ## Intended Use
 
 REFINe is intended for the computational design and optimization of fibrous network materials targeting specific mechanical properties. The framework is designed for researchers and engineers working in architected materials, soft robotics, textile engineering, and additive manufacturing. It supports both forward mechanical prediction and inverse design, with outputs directly compatible with continuous fiber laying and 3D printing (stereolithography and fused deposition modeling) fabrication pipelines.
