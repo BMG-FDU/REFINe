@@ -6,11 +6,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 from collections import deque
 from shapely.geometry import LineString, Point
+"""
+Baseline SAC optimizer for parametric welded network design.
 
+This script couples a parametric graph generator, a surrogate load predictor,
+and a Soft Actor-Critic search loop. The optimization explores geometric
+offset parameters that improve predicted load response while controlling
+material usage through total fiber length.
+"""
 from features.load_predictor import LoadPredictor
 from features.graph_feature_extractor import GraphFeatureExtractor
 
-
+# Centralized runtime configuration.
+# Values are defined as class attributes so that experiment scripts can patch
+# them before launching a run.
 class RunConfig:
     model_dir        = None
 
@@ -51,7 +60,9 @@ class RunConfig:
     utd              = None
     buf_cap          = None
     hidden_dim       = None
-
+    # Validate that all required experiment parameters have been assigned.
+    # The checks also enforce consistency between base initialization mode and
+    # SAC rollout mode.
     @classmethod
     def validate(cls):
         required = [
@@ -81,7 +92,9 @@ class RunConfig:
         elif cls.sac_mode != "single_step":
             raise ValueError("sac_mode must be 'single_step' or 'multi_step'.")
 
-
+# Resolve the initial geometric parameter vector.
+# A provided vector enables deterministic comparison, while random initialization
+# supports repeated trials with controlled seeds.
 def _resolve_base(cfg, seed):
     if cfg.base_mode == "provided":
         return list(cfg.base)
@@ -90,7 +103,9 @@ def _resolve_base(cfg, seed):
                             cfg.base_random_high,
                             cfg.base_random_dim).astype(np.float32))
 
-
+# Compute graph edge-length statistics used by the reward and progress reports.
+# Keeping this utility separate from the environment makes the reward logic
+# easier to adjust.
 def edge_lengths(G):
     pos = nx.get_node_attributes(G, 'pos')
     l = [math.hypot(*(np.subtract(pos[u], pos[v]))) for u, v in G.edges()]
@@ -110,11 +125,15 @@ def moving_average(a, w=50):
         o[i] = a[max(0, i - w + 1):i + 1].mean()
     return o
 
-
+# GraphBuilder defines the parametric geometry family used by the optimizer.
+# It separates cell construction, symmetric perturbation, tiling, and topological
+# cleanup so that each stage can be modified independently.
 class GraphBuilder:
     def __init__(self, s, k, t, sc):
         self.s, self.k, self.t, self.sc = s, k, t, sc
-
+    # Construct the unperturbed square base cell.
+    # Intermediate points on each side define the controllable geometric degrees
+    # of freedom.
     def base_square(self):
         G = nx.Graph()
         v = {'A': (0, 0), 'B': (self.s, 0), 'C': (self.s, self.s), 'D': (0, self.s)}
@@ -132,7 +151,9 @@ class GraphBuilder:
                 if j == self.k:
                     G.add_edge(n, b)
         return G
-
+    # Apply rotationally symmetric offsets to corresponding boundary points.
+    # This preserves the intended design symmetry while still allowing nontrivial
+    # local geometric variation.
     def apply_offsets(self, G, o):
         H = nx.Graph()
         H.add_nodes_from(G.nodes(data=True))
@@ -154,7 +175,8 @@ class GraphBuilder:
         for i in range(len(ns)):
             H.add_edge(ns[i], ns[(i + 1) % len(ns)])
         return H
-
+    # Tile and scale the perturbed unit cell into a full network specimen.
+    # The scaling stage maps abstract cell coordinates into a normalized design size.
     def tile_scale(self, G):
         H = nx.Graph()
         p = nx.get_node_attributes(G, 'pos')
@@ -169,7 +191,9 @@ class GraphBuilder:
                 for u, v in G.edges():
                     H.add_edge(f"{u}_{i}_{j}", f"{v}_{i}_{j}")
         return H
-
+    # Promote geometric crossings into explicit graph nodes.
+    # This makes downstream graph features and load prediction depend on welded
+    # topology rather than only visual intersections.
     def weld(self, G):
         H = copy.deepcopy(G)
         e = list(H.edges())
@@ -203,7 +227,8 @@ class GraphBuilder:
         H.remove_edges_from(e)
         H.add_edges_from(ne)
         return H
-
+    # Remove degenerate edges introduced by coincident points or intersection handling.
+    # This cleanup avoids zero-length segments in later graph and geometry operations.
     def clean(self, G):
         H = nx.Graph()
         H.add_nodes_from(G.nodes(data=True))
@@ -211,7 +236,7 @@ class GraphBuilder:
             if G.nodes[u]['pos'] != G.nodes[v]['pos']:
                 H.add_edge(u, v)
         return H
-
+    # Build the final graph through all geometry and topology-processing stages.
     def build(self, o):
         g = self.base_square()
         g = self.apply_offsets(g, o)
@@ -220,11 +245,23 @@ class GraphBuilder:
         g = self.clean(g)
         return g
 
-
+# WeldEnv provides a lightweight reinforcement-learning environment.
+# The state is the current parameter vector, and the action represents a bounded
+# geometric perturbation.
 class WeldEnv:
-    def __init__(self, builder, predictor, base,
-                 act_bound, p_low, p_high,
-                 alpha, beta, bonus_both, penalty_l, l_thresh,
+
+    def __init__(self,
+                 builder,
+                 predictor,
+                 base,
+                 act_bound,
+                 p_low,
+                 p_high,
+                 alpha,
+                 beta,
+                 bonus_both,
+                 penalty_l,
+                 l_thresh,
                  step_anchor="base"):
         self.builder = builder
         self.predictor = predictor
@@ -251,18 +288,24 @@ class WeldEnv:
     def act_dim(self):
         return self.dim
 
+    # Reset the environment to the baseline design for a new episode.
     def reset(self):
         self.p = self.base.copy()
         self.g = self.builder.build(self.p)
         return self.p.copy()
 
+    # Apply an action, rebuild the graph, evaluate the surrogate predictor,
+    # and convert the task objectives into a scalar reward.
+    # The reward combines predicted load improvement and length reduction.
+    # A bonus is assigned when both objectives improve relative to the baseline.
     def step(self, action):
         a = action * self.act_bound
         anchor = self.base if self.step_anchor == "base" else self.p
-        self.p = np.clip(anchor + a, self.p_low, self.p_high).astype(np.float32)
+        self.p = np.clip(anchor + a, self.p_low,
+                         self.p_high).astype(np.float32)
         self.g = self.builder.build(self.p)
 
-        load   = float(self.predictor.predict_from_graph(self.g))
+        load = float(self.predictor.predict_from_graph(self.g))
         length = float(total_edge_length(self.g))
 
         dw = (load - self.hb) / max(abs(self.hb), 1e-6)
@@ -278,7 +321,7 @@ class WeldEnv:
         info = {"w": load, "l": length, "dw": dw, "dl": dl, "both": both}
         return self.p.copy(), float(r), True, info
 
-
+# ReplayBuffer stores off-policy transitions for SAC updates.
 class ReplayBuffer:
     def __init__(self, cap):
         self.buf = deque(maxlen=cap)
@@ -298,7 +341,8 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buf)
 
-
+# Actor network for the stochastic policy.
+# The tanh-squashed Gaussian output keeps sampled actions within a bounded range.
 class Actor(nn.Module):
     def __init__(self, obs_dim, act_dim, hid, log_std_min=-20, log_std_max=2):
         super().__init__()
@@ -326,7 +370,10 @@ class Actor(nn.Module):
                     - torch.log(1 - action.pow(2) + 1e-6)).sum(-1, keepdim=True)
         return action, log_prob
 
-
+# The twin-critic design reduces overestimation bias during policy optimization.
+# Soft Actor-Critic implementation used for continuous geometric search.
+# The class owns the actor, critic, target critic, entropy coefficient, and
+# replay buffer.
 class Critic(nn.Module):
     def __init__(self, obs_dim, act_dim, hid):
         super().__init__()
@@ -368,7 +415,9 @@ class SAC:
             self.alpha = alpha_init
 
         self.rb = ReplayBuffer(buf_cap)
-
+    # Select an action from the current policy.
+    # Deterministic mode is reserved for evaluation, while stochastic mode is used
+    # during training.
     def select_action(self, obs, deterministic=False):
         with torch.no_grad():
             obs_t = torch.FloatTensor(obs).unsqueeze(0)
@@ -377,7 +426,7 @@ class SAC:
                 return torch.tanh(mu).squeeze(0).numpy()
             a, _ = self.actor.sample(obs_t)
             return a.squeeze(0).numpy()
-
+    # Perform one SAC gradient update using a sampled replay batch.
     def _update_once(self):
         s, a, r, s2, d = self.rb.sample(self.bs)
 
@@ -411,14 +460,15 @@ class SAC:
         for p, pt in zip(self.critic.parameters(),
                          self.critic_target.parameters()):
             pt.data.copy_(self.tau * p.data + (1 - self.tau) * pt.data)
-
+    # Run pending SAC updates once the replay buffer contains enough warm-up samples.
     def update(self):
         if len(self.rb) < self.warmup:
             return
         for _ in range(self.utd):
             self._update_once()
 
-
+# Logger stores episode-level progress and tracks the best observed designs.
+# Only compact records are kept here to avoid coupling logging to graph objects.
 class Logger:
     def __init__(self):
         self.best_r = -float("inf")
@@ -454,7 +504,7 @@ class Logger:
         elif new_both_best:
             print(f"  + new both-best   r={r:.4f}  w={w:.2f}  l={l:.2f}")
 
-
+# Execute a single-step episode in which one action directly proposes a design.
 def _episode_single_step(env, sac, log, ep):
     s = env.reset()
     a = sac.select_action(s)
@@ -463,7 +513,7 @@ def _episode_single_step(env, sac, log, ep):
     sac.update()
     log.add(ep, r, info["w"], info["l"], env.p, both=info["both"])
 
-
+# Execute a multi-step episode in which actions iteratively refine the design.
 def _episode_multi_step(env, sac, log, ep, horizon):
     s = env.reset()
     total_r   = 0.0
@@ -480,7 +530,9 @@ def _episode_multi_step(env, sac, log, ep, horizon):
     log.add(ep, total_r, last_info["w"], last_info["l"], env.p,
             both=last_info["both"])
 
-
+# Train one independent SAC run with a fixed random seed.
+# The run includes graph construction, surrogate predictor setup, environment
+# creation, optimization, and progress reporting.
 def train(run_id, seed):
     cfg = RunConfig
     random.seed(seed)
@@ -534,7 +586,9 @@ def train(run_id, seed):
 
     return log
 
-
+# Main experiment driver for repeated runs.
+# Multiple seeds are used to estimate robustness and to select a recommended
+# design from successful trials.
 def main():
     RunConfig.validate()
     cfg = RunConfig
@@ -555,12 +609,16 @@ def main():
         log = train(run_id=i + 1, seed=seed)
         all_logs.append(log)
 
-        b  = log.best_info
+        b = log.best_info
         bb = log.best_both_info
         print(f"\n  Run {i+1} done:")
-        print(f"    best:      r={b['r']:+.4f}  w={b['w']:.2f}  l={b['l']:.2f}  (ep {b['ep']})")
+        print(
+            f"    best:      r={b['r']:+.4f}  w={b['w']:.2f}  l={b['l']:.2f}  (ep {b['ep']})"
+        )
         if bb:
-            print(f"    both-best: r={bb['r']:+.4f}  w={bb['w']:.2f}  l={bb['l']:.2f}  (ep {bb['ep']})")
+            print(
+                f"    both-best: r={bb['r']:+.4f}  w={bb['w']:.2f}  l={bb['l']:.2f}  (ep {bb['ep']})"
+            )
         else:
             print(f"    both-best: not found")
         print(f"    both_rate: {log.n_both/cfg.ep_max:.1%}")
@@ -573,7 +631,7 @@ def main():
     print("-" * 90)
 
     for i, log in enumerate(all_logs):
-        b  = log.best_info
+        b = log.best_info
         bb = log.best_both_info
         br = f"{bb['r']:9.4f}" if bb else "      N/A"
         bw = f"{bb['w']:8.2f}" if bb else "     N/A"
@@ -581,8 +639,8 @@ def main():
         print(f"  {i+1:2d} | {b['r']:9.4f} {b['w']:8.2f} {b['l']:8.2f} | "
               f"{br} {bw} {bl} | {log.n_both/cfg.ep_max:6.1%}")
 
-    brs = [log.best_r           for log in all_logs]
-    bws = [log.best_info['w']   for log in all_logs]
+    brs = [log.best_r for log in all_logs]
+    bws = [log.best_info['w'] for log in all_logs]
     print(f"\n  best_r : {np.mean(brs):.4f} +/- {np.std(brs):.4f}"
           f"  (range {np.min(brs):.4f} ~ {np.max(brs):.4f})")
     print(f"  best_w : {np.mean(bws):.2f} +/- {np.std(bws):.2f}")
@@ -596,10 +654,10 @@ def main():
 
     if valid:
         ci, clog = max(valid, key=lambda x: x[1].best_both_r)
-        ch       = clog.best_both_info
+        ch = clog.best_both_info
         base_arr = np.array(_resolve_base(cfg, ci * 137 + cfg.seed_base))
-        p        = np.array(ch['p'])
-        delta    = p - base_arr
+        p = np.array(ch['p'])
+        delta = p - base_arr
         print(f"\n  * recommended  (Run {ci+1}, both-best)")
         print(f"    reward = {ch['r']:+.4f}")
         print(f"    w      = {ch['w']:.2f}")
@@ -609,25 +667,30 @@ def main():
     else:
         best_idx = int(np.argmax(brs))
         b = all_logs[best_idx].best_info
-        print(f"\n  no both-solution found. global best from Run {best_idx+1}:")
+        print(
+            f"\n  no both-solution found. global best from Run {best_idx+1}:")
         print(f"    w={b['w']:.2f}  l={b['l']:.2f}")
 
-    ts  = time.strftime("%Y%m%d_%H%M%S")
+    ts = time.strftime("%Y%m%d_%H%M%S")
     out = {
-        "n_runs": cfg.n_runs, "ep_max": cfg.ep_max,
-        "sac_mode": cfg.sac_mode, "base_mode": cfg.base_mode,
+        "n_runs": cfg.n_runs,
+        "ep_max": cfg.ep_max,
+        "sac_mode": cfg.sac_mode,
+        "base_mode": cfg.base_mode,
         "runs": [],
     }
     for i, log in enumerate(all_logs):
         out["runs"].append({
-            "run":       i + 1,
-            "seed":      i * 137 + cfg.seed_base,
-            "best":      log.best_info,
+            "run": i + 1,
+            "seed": i * 137 + cfg.seed_base,
+            "best": log.best_info,
             "best_both": log.best_both_info,
             "both_rate": round(log.n_both / cfg.ep_max, 4),
-            "history":   log.history,
+            "history": log.history,
         })
     path = f"sac_opt_{ts}.json"
+    # Save the aggregated experiment history to JSON for later inspection,
+    # plotting, or comparison with other optimization settings.
     with open(path, 'w') as f:
         json.dump(out, f, indent=2)
     print(f"\n  saved -> {path}")
