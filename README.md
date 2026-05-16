@@ -99,6 +99,6 @@ The GNN is trained on a dataset of fibrous network topologies generated via `P1_
 ---
 
 ## Citation
-
+```
 > BMG-FDU. *REFINe: REgular FIbrous Network Framework*. GitHub, 2026. https://github.com/BMG-FDU/REFINe
 ```
